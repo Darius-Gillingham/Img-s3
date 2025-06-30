@@ -1,22 +1,31 @@
 // File: serverC.js
-// Commit: update path to read shared prompt folder from sibling s2 repo
+// Commit: modularize serverC with runtime path resolution and cross-repo isolation support
 
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 
 dotenv.config();
 
 console.log('=== Running serverC.js ===');
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Points to prompts created by serverB in components/s2
-const WORDSET_DIR = path.resolve('../s2/data/prompts');
-const OUTPUT_DIR = './data/generated';
+// Use relative path resolution to shared prompt folder in s2
+const WORDSET_DIR = path.join(__dirname, '../s2/data/prompts');
+const OUTPUT_DIR = path.join(__dirname, './data/generated');
 
 async function loadAllWordsets() {
+  try {
+    await fs.access(WORDSET_DIR);
+  } catch {
+    console.warn(`✗ Shared wordset folder not found: ${WORDSET_DIR}`);
+    return [];
+  }
+
   const files = await fs.readdir(WORDSET_DIR);
   const allWordsets = [];
 
