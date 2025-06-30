@@ -1,27 +1,64 @@
 // File: serverC.js
-// Commit: convert to reading wordsets from Supabase and generating prompt output directly
+// Commit: read wordsets from Supabase `wordsets/` bucket and upload prompts to `prompts/` bucket
 
 import dotenv from 'dotenv';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
 
 dotenv.config();
-
 console.log('=== Running serverC.js ===');
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
 
-const OUTPUT_DIR = path.join(__dirname, './data/generated');
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+function getTimestampFilename(prefix = 'generated-prompts') {
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  return `${prefix}-${timestamp}.json`;
+}
+
+async function fetchAllWordsets() {
+  const { data: files, error } = await supabase.storage.from('wordsets').list('', {
+    limit: 100,
+    sortBy: { column: 'name', order: 'desc' }
+  });
+
+  if (error || !files || files.length === 0) {
+    console.warn('✗ Failed to list wordset files:', error);
+    return [];
+  }
+
+  const wordsets = [];
+
+  for (const file of files) {
+    if (!file.name.endsWith('.json')) continue;
+
+    const { data, error } = await supabase.storage
+      .from('wordsets')
+      .download(file.name);
+
+    if (error || !data) {
+      console.warn(`✗ Failed to download ${file.name}:`, error);
+      continue;
+    }
+
+    const text = await data.text();
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed.wordsets)) {
+        wordsets.push(...parsed.wordsets);
+      }
+    } catch {
+      console.warn(`✗ Failed to parse ${file.name}`);
+    }
+  }
+
+  return wordsets;
+}
 
 function pickTwoDistinct(arr) {
   const first = arr[Math.floor(Math.random() * arr.length)];
@@ -32,25 +69,7 @@ function pickTwoDistinct(arr) {
   return [first, second];
 }
 
-async function loadWordsetsFromSupabase(limit = 100) {
-  const { data, error } = await supabase
-    .from('wordsets')
-    .select('*')
-    .limit(limit);
-
-  if (error) {
-    console.error('✗ Failed to fetch wordsets from Supabase:', error);
-    return [];
-  }
-
-  return data.map(ws => [
-    ws.noun1, ws.noun2, ws.verb,
-    ws.adjective1, ws.adjective2,
-    ws.style, ws.setting, ws.era, ws.mood
-  ]);
-}
-
-async function generatePromptsFromWordsets(ws1, ws2) {
+async function generatePrompts(ws1, ws2) {
   const combined = Array.from(new Set([...ws1, ...ws2]));
   const wordList = combined.join(', ');
 
@@ -86,16 +105,25 @@ async function generatePromptsFromWordsets(ws1, ws2) {
   }
 }
 
-function getOutputFilename() {
-  const now = new Date();
-  const timestamp = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
-  return `generated-prompts-${timestamp}.json`;
+async function uploadPromptsToBucket(prompts, filename) {
+  const json = JSON.stringify({ prompts }, null, 2);
+  const { error } = await supabase.storage
+    .from('prompts')
+    .upload(filename, new Blob([json], { type: 'application/json' }), {
+      upsert: false
+    });
+
+  if (error) {
+    console.error('✗ Failed to upload prompt file:', error);
+    return;
+  }
+
+  console.log(`✓ Uploaded prompt file: ${filename}`);
 }
 
 async function run() {
-  await fs.mkdir(OUTPUT_DIR, { recursive: true });
+  const wordsets = await fetchAllWordsets();
 
-  const wordsets = await loadWordsetsFromSupabase();
   if (wordsets.length < 2) {
     console.warn('✗ Not enough wordsets to compose a pair.');
     return;
@@ -104,15 +132,9 @@ async function run() {
   const [ws1, ws2] = pickTwoDistinct(wordsets);
   console.log(`→ Selected wordsets:\n• ${ws1.join(', ')}\n• ${ws2.join(', ')}`);
 
-  const prompts = await generatePromptsFromWordsets(ws1, ws2);
-
-  const filename = getOutputFilename();
-  const filepath = path.join(OUTPUT_DIR, filename);
-
-  await fs.writeFile(filepath, JSON.stringify({ prompts }, null, 2), 'utf-8');
-  await fs.writeFile(filepath + '.done', '', 'utf-8');
-
-  console.log(`✓ Saved ${prompts.length} prompts and flagged ${filename} as complete`);
+  const prompts = await generatePrompts(ws1, ws2);
+  const filename = getTimestampFilename();
+  await uploadPromptsToBucket(prompts, filename);
 }
 
 run().catch(err => {
