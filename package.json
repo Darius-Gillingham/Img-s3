@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node serverC.js"
+  },
+  "keywords": [],
+  "author": "Darius Gillingham",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "@supabase/supabase-js": "^2.50.0",
+    "openai": "^5.7.0",
+    "axios": "^1.10.0"
+  }
+}
