@@ -1,5 +1,5 @@
 // File: serverC.js
-// Commit: convert TypeScript prompt generation server to JavaScript with .done flag handling and modular independence preserved
+// Commit: update path to read shared prompt folder from sibling s2 repo
 
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
@@ -11,7 +11,9 @@ dotenv.config();
 console.log('=== Running serverC.js ===');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const WORDSET_DIR = './data/prompts';
+
+// Points to prompts created by serverB in components/s2
+const WORDSET_DIR = path.resolve('../s2/data/prompts');
 const OUTPUT_DIR = './data/generated';
 
 async function loadAllWordsets() {
