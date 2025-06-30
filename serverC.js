@@ -1,6 +1,3 @@
-// File: serverC.js
-// Commit: read wordsets from Supabase `wordsets/` bucket and upload prompts to `prompts/` bucket
-
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
@@ -121,22 +118,29 @@ async function uploadPromptsToBucket(prompts, filename) {
   console.log(`✓ Uploaded prompt file: ${filename}`);
 }
 
-async function run() {
-  const wordsets = await fetchAllWordsets();
+async function loopForever(intervalMs = 30000) {
+  while (true) {
+    try {
+      const wordsets = await fetchAllWordsets();
 
-  if (wordsets.length < 2) {
-    console.warn('✗ Not enough wordsets to compose a pair.');
-    return;
+      if (wordsets.length < 2) {
+        console.warn('✗ Not enough wordsets to compose a pair.');
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        continue;
+      }
+
+      const [ws1, ws2] = pickTwoDistinct(wordsets);
+      console.log(`→ Selected wordsets:\n• ${ws1.join(', ')}\n• ${ws2.join(', ')}`);
+
+      const prompts = await generatePrompts(ws1, ws2);
+      const filename = getTimestampFilename();
+      await uploadPromptsToBucket(prompts, filename);
+    } catch (err) {
+      console.error('✗ Loop iteration failed:', err);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
-
-  const [ws1, ws2] = pickTwoDistinct(wordsets);
-  console.log(`→ Selected wordsets:\n• ${ws1.join(', ')}\n• ${ws2.join(', ')}`);
-
-  const prompts = await generatePrompts(ws1, ws2);
-  const filename = getTimestampFilename();
-  await uploadPromptsToBucket(prompts, filename);
 }
 
-run().catch(err => {
-  console.error('✗ serverC failed:', err);
-});
+loopForever();
