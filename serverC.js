@@ -1,48 +1,27 @@
 // File: serverC.js
-// Commit: modularize serverC with runtime path resolution and cross-repo isolation support
+// Commit: convert to reading wordsets from Supabase and generating prompt output directly
 
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
 console.log('=== Running serverC.js ===');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Use relative path resolution to shared prompt folder in s2
-const WORDSET_DIR = path.join(__dirname, '../s2/data/prompts');
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+
 const OUTPUT_DIR = path.join(__dirname, './data/generated');
-
-async function loadAllWordsets() {
-  try {
-    await fs.access(WORDSET_DIR);
-  } catch {
-    console.warn(`✗ Shared wordset folder not found: ${WORDSET_DIR}`);
-    return [];
-  }
-
-  const files = await fs.readdir(WORDSET_DIR);
-  const allWordsets = [];
-
-  for (const file of files) {
-    if (!file.startsWith('wordsets-') || !file.endsWith('.json')) continue;
-
-    const filepath = path.join(WORDSET_DIR, file);
-    const content = await fs.readFile(filepath, 'utf-8');
-    const parsed = JSON.parse(content);
-
-    if (Array.isArray(parsed.wordsets)) {
-      allWordsets.push(...parsed.wordsets);
-    }
-  }
-
-  return allWordsets;
-}
 
 function pickTwoDistinct(arr) {
   const first = arr[Math.floor(Math.random() * arr.length)];
@@ -51,6 +30,24 @@ function pickTwoDistinct(arr) {
     second = arr[Math.floor(Math.random() * arr.length)];
   }
   return [first, second];
+}
+
+async function loadWordsetsFromSupabase(limit = 100) {
+  const { data, error } = await supabase
+    .from('wordsets')
+    .select('*')
+    .limit(limit);
+
+  if (error) {
+    console.error('✗ Failed to fetch wordsets from Supabase:', error);
+    return [];
+  }
+
+  return data.map(ws => [
+    ws.noun1, ws.noun2, ws.verb,
+    ws.adjective1, ws.adjective2,
+    ws.style, ws.setting, ws.era, ws.mood
+  ]);
 }
 
 async function generatePromptsFromWordsets(ws1, ws2) {
@@ -98,7 +95,7 @@ function getOutputFilename() {
 async function run() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
 
-  const wordsets = await loadAllWordsets();
+  const wordsets = await loadWordsetsFromSupabase();
   if (wordsets.length < 2) {
     console.warn('✗ Not enough wordsets to compose a pair.');
     return;
