@@ -1,4 +1,3 @@
-// serverC.js
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import axios from 'axios';
@@ -53,18 +52,12 @@ async function fetchAllWordsets() {
   return wordsets;
 }
 
-function pickTwoDistinct(arr) {
-  const first = arr[Math.floor(Math.random() * arr.length)];
-  let second = first;
-  while (second === first && arr.length > 1) {
-    second = arr[Math.floor(Math.random() * arr.length)];
-  }
-  return [first, second];
+function pickOneRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function buildPrompt(ws1, ws2) {
-  const words = Array.from(new Set([...ws1, ...ws2]));
-  return `No text overlay. A visual interpretation of: ${words.join(', ')}.`;
+function buildPrompt(wordset) {
+  return `No text overlay. A visual interpretation of: ${wordset.join(', ')}.`;
 }
 
 async function downloadImageBuffer(url) {
@@ -109,17 +102,17 @@ async function loopForever(batchSize = 5, intervalMs = 60000) {
   while (true) {
     try {
       const wordsets = await fetchAllWordsets();
-      if (wordsets.length < 2) {
-        console.warn('✗ Not enough wordsets.');
+      if (wordsets.length < 1) {
+        console.warn('✗ No wordsets found.');
         await new Promise(r => setTimeout(r, intervalMs));
         continue;
       }
 
-      console.log(`→ Generating ${batchSize} images from wordset combinations`);
+      console.log(`→ Generating ${batchSize} images using one wordset per prompt`);
 
       for (let i = 0; i < batchSize; i++) {
-        const [ws1, ws2] = pickTwoDistinct(wordsets);
-        const prompt = buildPrompt(ws1, ws2);
+        const ws = pickOneRandom(wordsets);
+        const prompt = buildPrompt(ws);
         try {
           await generateImage(prompt, i);
         } catch (err) {
