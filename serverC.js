@@ -1,5 +1,7 @@
+// serverC.js
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
+import axios from 'axios';
 import OpenAI from 'openai';
 
 dotenv.config();
@@ -12,10 +14,10 @@ const supabase = createClient(
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-function getTimestampFilename(prefix = 'generated-prompts') {
+function getTimestampedFilename(index) {
   const now = new Date();
-  const timestamp = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
-  return `${prefix}-${timestamp}.json`;
+  const tag = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  return `image-${tag}-${index + 1}.png`;
 }
 
 async function fetchAllWordsets() {
@@ -24,8 +26,8 @@ async function fetchAllWordsets() {
     sortBy: { column: 'name', order: 'desc' }
   });
 
-  if (error || !files || files.length === 0) {
-    console.warn('✗ Failed to list wordset files:', error);
+  if (error || !files) {
+    console.warn('✗ Failed to list wordsets:', error);
     return [];
   }
 
@@ -35,10 +37,7 @@ async function fetchAllWordsets() {
     if (!file.name.endsWith('.json')) continue;
 
     const { data, error } = await supabase.storage.from('wordsets').download(file.name);
-    if (error || !data) {
-      console.warn(`✗ Failed to download ${file.name}:`, error);
-      continue;
-    }
+    if (error || !data) continue;
 
     const text = await data.text();
     try {
@@ -63,89 +62,76 @@ function pickTwoDistinct(arr) {
   return [first, second];
 }
 
-function sanitizePrompt(text, maxWords = 20) {
-  return text
-    .trim()
-    .replace(/^"|"$/g, '')
-    .replace(/\s+/g, ' ')
-    .split(' ')
-    .slice(0, maxWords)
-    .join(' ');
+function buildPrompt(ws1, ws2) {
+  const words = Array.from(new Set([...ws1, ...ws2]));
+  return `No text overlay. A visual interpretation of: ${words.join(', ')}.`;
 }
 
-async function generatePrompts(ws1, ws2) {
-  const combined = Array.from(new Set([...ws1, ...ws2]));
-  const wordList = combined.join(', ');
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4',
-    temperature: 0.5,
-    top_p: 0.8,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a terse, literal prompt generator. Given a word list, return 5 concrete, non-poetic DALL·E prompts.\n' +
-          '- Do NOT use emotional language, metaphors, or abstract phrasing.\n' +
-          '- Use physical nouns, clear styles, and specific locations.\n' +
-          '- Avoid filler words and minimize adjectives.\n' +
-          '- Format your output as a plain list, no explanation.'
-      },
-      {
-        role: 'user',
-        content: `Wordset: ${wordList}`
-      }
-    ]
-  });
-
-  const content = response.choices[0].message?.content;
-  if (!content) throw new Error('No response content from GPT');
-
-  return content
-    .split('\n')
-    .map(line => line.trim().replace(/^\d+[\).]\s*/, ''))
-    .map(line => sanitizePrompt(line))
-    .filter(line => line.length > 0);
+async function downloadImageBuffer(url) {
+  const res = await axios.get(url, { responseType: 'arraybuffer' });
+  return Buffer.from(res.data);
 }
 
-async function uploadPromptsToBucket(prompts, filename) {
-  const json = JSON.stringify({ prompts }, null, 2);
+async function uploadImage(buffer, filename) {
   const { error } = await supabase.storage
-    .from('prompts')
-    .upload(filename, new Blob([json], { type: 'application/json' }), {
+    .from('generated-images')
+    .upload(filename, buffer, {
+      contentType: 'image/png',
       upsert: false
     });
 
   if (error) {
-    console.error('✗ Failed to upload prompt file:', error);
-    return;
+    console.error(`✗ Failed to upload ${filename}:`, error);
+  } else {
+    console.log(`✓ Uploaded image: ${filename}`);
   }
-
-  console.log(`✓ Uploaded prompt file: ${filename}`);
 }
 
-async function loopForever(intervalMs = 30000) {
+async function generateImage(prompt, index) {
+  console.log(`→ Generating image for prompt: "${prompt}"`);
+
+  const response = await openai.images.generate({
+    model: 'dall-e-3',
+    prompt,
+    n: 1,
+    size: '1024x1024'
+  });
+
+  const url = response.data?.[0]?.url;
+  if (!url) throw new Error('No image URL returned.');
+
+  const buffer = await downloadImageBuffer(url);
+  const filename = getTimestampedFilename(index);
+  await uploadImage(buffer, filename);
+}
+
+async function loopForever(batchSize = 5, intervalMs = 60000) {
   while (true) {
     try {
       const wordsets = await fetchAllWordsets();
-
       if (wordsets.length < 2) {
-        console.warn('✗ Not enough wordsets to compose a pair.');
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        console.warn('✗ Not enough wordsets.');
+        await new Promise(r => setTimeout(r, intervalMs));
         continue;
       }
 
-      const [ws1, ws2] = pickTwoDistinct(wordsets);
-      console.log(`→ Selected wordsets:\n• ${ws1.join(', ')}\n• ${ws2.join(', ')}`);
+      console.log(`→ Generating ${batchSize} images from wordset combinations`);
 
-      const prompts = await generatePrompts(ws1, ws2);
-      const filename = getTimestampedFilename();
-      await uploadPromptsToBucket(prompts, filename);
+      for (let i = 0; i < batchSize; i++) {
+        const [ws1, ws2] = pickTwoDistinct(wordsets);
+        const prompt = buildPrompt(ws1, ws2);
+        try {
+          await generateImage(prompt, i);
+        } catch (err) {
+          console.error(`✗ Failed image #${i + 1}:`, err.message);
+        }
+      }
     } catch (err) {
-      console.error('✗ Loop iteration failed:', err);
+      console.error('✗ Outer loop error:', err);
     }
 
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    console.log('✓ Batch complete. Waiting before next run...\n');
+    await new Promise(r => setTimeout(r, intervalMs));
   }
 }
 
